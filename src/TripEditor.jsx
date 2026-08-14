@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   MapPin,
   Calendar,
@@ -25,67 +25,10 @@ import ItineraryList from "./ItineraryList";
 import SearchBar from "./SearchBar";
 import AddStopForm from "./AddStopForm";
 
-const DEFAULT_TRIP = {
-  id: "tokyo-kyoto-2026",
-  destination: "Japan Discovery",
-  startDate: "2026-10-15",
-  endDate: "2026-10-20",
-  itinerary: {
-    "1": [
-      {
-        id: "item-1",
-        name: "Shibuya Crossing",
-        time: "09:00 AM",
-        description: "Experience the world's busiest pedestrian intersection.",
-        type: "sightseeing",
-        lat: 35.6595,
-        lng: 139.7004,
-      },
-      {
-        id: "item-2",
-        name: "Meiji Jingu Shrine",
-        time: "11:30 AM",
-        description: "Serene Shinto shrine dedicated to Emperor Meiji.",
-        type: "culture",
-        lat: 35.6764,
-        lng: 139.6993,
-      },
-      {
-        id: "item-3",
-        name: "Shinjuku Gyoen National Garden",
-        time: "02:30 PM",
-        description:
-          "Expansive historic park featuring traditional Japanese gardens.",
-        type: "nature",
-        lat: 35.6852,
-        lng: 139.7101,
-      },
-    ],
-    "2": [
-      {
-        id: "item-4",
-        name: "Kinkaku-ji (Golden Pavilion)",
-        time: "10:00 AM",
-        description:
-          "Stunning Zen Buddhist temple covered in brilliant gold leaf.",
-        type: "culture",
-        lat: 35.0394,
-        lng: 135.7292,
-      },
-      {
-        id: "item-5",
-        name: "Fushimi Inari Taisha",
-        time: "01:30 PM",
-        description:
-          "Famous shrine path lined with thousands of vibrant orange torii gates.",
-        type: "culture",
-        lat: 34.9671,
-        lng: 135.7727,
-      },
-    ],
-    "3": [],
-  },
-};
+import { useParams, useNavigate } from "react-router-dom";
+import { loadTrips, saveTrips } from "./tripUtils";
+
+export default function TripEditor() {
 
 async function geocodeLocation(name) {
   const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(
@@ -147,26 +90,48 @@ async function searchGeocode(query) {
 }
 
 
-export default function App() {
-  const [trip, setTrip] = useState(() => {
-    try {
-      const saved = localStorage.getItem("globetrek_trip");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.itinerary) {
-          Object.keys(parsed.itinerary).forEach((day) => {
-            if (!Array.isArray(parsed.itinerary[day])) {
-              parsed.itinerary[day] = [];
-            }
-          });
-        }
-        return parsed;
-      }
-    } catch (e) {
-      console.error("Local storage lookup failed; reverting to defaults.", e);
-    }
-    return DEFAULT_TRIP;
-  });
+const { tripId } = useParams();
+const navigate = useNavigate();
+
+const [trip, setTrip] = useState(null);
+const [trips, setTrips] = useState({});
+
+const [showToast, setShowToast] = useState(false);
+
+const directSnapshotRef = useRef(null);
+
+const triggerMapSnapshot = () => {
+  // This calls DirectLiveMap’s snapshot function
+  if (directSnapshotRef.current) {
+    directSnapshotRef.current();
+  }
+};
+
+
+const handleSnapshotFromHeader = (dataURL) => {
+  localStorage.setItem(`mapSnapshot-${activeDay}`, dataURL);
+  setShowToast(true);
+  setTimeout(() => setShowToast(false), 2500);
+};
+
+
+
+useEffect(() => {
+  const loaded = loadTrips();
+  setTrips(loaded);
+
+  if (loaded[tripId]) {
+    setTrip(loaded[tripId]);
+  }
+}, [tripId]);
+
+useEffect(() => {
+  if (!trip) return;
+  const updated = { ...trips, [trip.id]: trip };
+  setTrips(updated);
+  saveTrips(updated);
+}, [trip]);
+
 
   const [activeDay, setActiveDay] = useState("1");
   const [offlineMode, setOfflineMode] = useState(false);
@@ -195,19 +160,24 @@ export default function App() {
     script.onload = () => setLeafletLoaded(true);
     document.head.appendChild(script);
 
+    // ⭐ Add Leaflet-Image here
+    const imgScript = document.createElement("script");
+    imgScript.src = "https://unpkg.com/leaflet-image/leaflet-image.js";
+    imgScript.async = true;
+    document.head.appendChild(imgScript);
+
     return () => {
       if (document.head.contains(link)) document.head.removeChild(link);
       if (document.head.contains(script)) document.head.removeChild(script);
+      if (document.head.contains(imgScript)) document.head.removeChild(imgScript);
     };
   }, []);
 
+
   const activeDayStops = useMemo(() => {
-    return trip.itinerary[activeDay] || [];
+    return trip?.itinerary?.[activeDay] || [];
   }, [trip, activeDay]);
 
-  useEffect(() => {
-    localStorage.setItem("globetrek_trip", JSON.stringify(trip));
-  }, [trip]);
 
   useEffect(() => {
     if (notification) {
@@ -236,15 +206,23 @@ export default function App() {
     };
   }, [searchQuery]);
 
+  const savedSnapshot = localStorage.getItem(`mapSnapshot-${activeDay}`);
 
   const tripStats = useMemo(() => {
+    if (!trip) return { daysCount: 0, totalStops: 0 };
+
     let totalStops = 0;
     const days = Object.keys(trip.itinerary);
+
     days.forEach((d) => {
       totalStops += (trip.itinerary[d] || []).length;
     });
+
     return { daysCount: days.length, totalStops };
   }, [trip]);
+
+  const stopsByDay = trip?.itinerary || {};
+
 
   const handleSelectSuggestion = (suggestion) => {
     setCustomName(suggestion.name);
@@ -298,16 +276,19 @@ export default function App() {
       lng: geo.lng,
     };
 
-    setTrip((prev) => {
+    // ⭐ THIS WAS MISSING — and caused the syntax error
+    setTrip(prev => {
       const updatedItinerary = { ...prev.itinerary };
+
       if (!updatedItinerary[dayKey]) {
         updatedItinerary[dayKey] = [];
       }
+
       updatedItinerary[dayKey] = [...updatedItinerary[dayKey], newStop];
 
       return {
         ...prev,
-        itinerary: updatedItinerary,
+        itinerary: updatedItinerary
       };
     });
 
@@ -322,6 +303,7 @@ export default function App() {
       message: `Added "${newStop.name}" to Day ${dayKey} with real coordinates!`,
     });
   };
+
 
   const handleDeleteStop = (dayKey, stopId) => {
     setTrip((prev) => {
@@ -372,57 +354,60 @@ export default function App() {
         "Are you sure you want to reset back to the Tokyo/Kyoto default itinerary?"
       )
     ) {
-      setTrip(DEFAULT_TRIP);
-      setActiveDay("1");
-      setSelectedAddDay("1");
-      localStorage.removeItem("globetrek_trip");
+      setTrip({
+        ...trip,
+        itinerary: { "1": [] }
+        });
+        setActiveDay("1");
+        setSelectedAddDay("1");
+
     }
   };
 
   return (
     <div className="flex flex-col h-screen w-full bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 overflow-hidden font-sans">
-      <header className="flex flex-shrink-0 items-center justify-between px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm z-10">
-        <div className="flex items-center gap-3">
-          <div className="bg-indigo-600 text-white p-2 rounded-xl shadow-md">
-            <Compass className="w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-              GlobeTrek
-              <span className="text-xs bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 font-semibold px-2 py-0.5 rounded-full">
-                Planner
-              </span>
+      <header className="flex items-center justify-between px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm">
+
+        {/* Back Button */}
+        <button
+            onClick={() => navigate("/")}
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition"
+        >
+            <span className="text-lg">←</span>
+            Back to Dashboard
+        </button>
+
+        {/* Title */}
+        <div className="flex flex-col">
+            <h1 className="text-xl font-bold text-slate-900 dark:text-white">
+            GlobeTrek Trip Editor
             </h1>
+
+            {trip && (
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Custom Travel & Sync Prototype
+                {trip && (
+                  <>
+                    {trip.destination} ({trip.startDate} - {trip.endDate})
+                  </>
+                )}
             </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setOfflineMode(!offlineMode)}
-            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all duration-300 ${
-              offlineMode
-                ? "bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-950/80 dark:text-amber-300 dark:border-amber-800"
-                : "bg-emerald-100 text-emerald-800 border border-emerald-300 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border-emerald-800"
-            }`}
-          >
-            {offlineMode ? (
-              <WifiOff className="w-4 h-4" />
-            ) : (
-              <Wifi className="w-4 h-4 text-emerald-600" />
             )}
-            <span>{offlineMode ? "Simulated Offline" : "Online Mode"}</span>
-          </button>
-          <button
-            onClick={handleResetTrip}
-            title="Reset default trip state"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
         </div>
-      </header>
+
+        {/* Offline Toggle */}
+        <button
+            onClick={() => setOfflineMode(!offlineMode)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+            offlineMode
+                ? "bg-amber-100 text-amber-800"
+                : "bg-emerald-100 text-emerald-800"
+            }`}
+        >
+            {offlineMode ? "Offline Mode" : "Online Mode"}
+        </button>
+
+        </header>
+
 
       {notification && (
         <div className="absolute top-20 right-6 flex items-center gap-2 bg-slate-900 text-white text-xs font-medium px-4 py-3 rounded-xl shadow-2xl border border-slate-700 z-50">
@@ -442,7 +427,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden w-full">
         {/* LEFT PANEL */}
         <div className="w-full md:w-[420px] flex flex-col border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex-shrink-0 h-full overflow-hidden">
-          <div className="p-4 border-b border-slate-150 dark:border-slate-800 flex-shrink-0">
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex-shrink-0">
             <DaySelector
               trip={trip}
               activeDay={activeDay}
@@ -535,6 +520,13 @@ export default function App() {
                       view all of these stops when fully offline!
                     </span>
                   </div>
+                  {savedSnapshot && (
+                    <img
+                      src={savedSnapshot}
+                      alt="Offline Map Snapshot"
+                      className="rounded-xl border border-slate-300 dark:border-slate-700 shadow-md w-full mt-2"
+                    />
+                  )}
 
                   <div className="space-y-2">
                     {Object.keys(trip.itinerary).map((day) => {
@@ -571,6 +563,12 @@ export default function App() {
 
         {/* RIGHT PANEL */}
         <div className="flex-1 bg-slate-100 dark:bg-slate-900 flex flex-col h-full overflow-hidden relative">
+          {showToast && (
+            <div className="absolute top-4 right-4 bg-indigo-600 text-white text-xs px-4 py-2 rounded-lg shadow-lg animate-fade-in-out z-[30000]">
+              Map snapshot saved!
+            </div>
+          )}
+
           <div className="absolute top-4 left-4 right-4 bg-white/90 dark:bg-slate-900/90 backdrop-blur border border-slate-200 dark:border-slate-800 p-4 rounded-2xl shadow-lg z-10 flex flex-wrap items-center justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
@@ -581,9 +579,11 @@ export default function App() {
                   <Calendar className="w-3.5 h-3.5" /> Oct 15 - Oct 20
                 </span>
               </div>
-              <h2 className="text-base font-bold text-slate-800 dark:text-white mt-1">
-                {trip.destination} - Day {activeDay} Route Plan
-              </h2>
+              {trip && (
+                <h2 className="text-base font-bold text-slate-800 dark:text-white mt-1">
+                  {trip.destination} - Day {activeDay} Route Plan
+                </h2>
+              )}
             </div>
             <div className="flex items-center gap-4 text-xs font-semibold">
               <div className="text-right">
@@ -594,6 +594,18 @@ export default function App() {
                   {tripStats.totalStops} visited
                 </p>
               </div>
+              <button
+                onClick={() => {
+                  if (directSnapshotRef.current) {
+                    directSnapshotRef.current();   // ⭐ triggers DirectLiveMap snapshot
+                  }
+                }}
+
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-lg text-[10px] shadow"
+              >
+                Save Map
+              </button>
+
               <div className="h-6 w-px bg-slate-200 dark:bg-slate-800" />
               <div className="text-right">
                 <p className="text-[10px] text-slate-400 uppercase">
@@ -610,26 +622,45 @@ export default function App() {
             <div className="absolute inset-0 bg-slate-200/50 dark:bg-slate-950/20 bg-[linear-gradient(to_right,#e2e8f0_1px,transparent_1px),linear-gradient(to_bottom,#e2e8f0_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,#1e293b_1px,transparent_1px),linear-gradient(to_bottom,#1e293b_1px,transparent_1px)] bg-[size:4rem_4rem]" />
 
             {offlineMode ? (
-              <div className="z-10 flex flex-col items-center justify-center p-8 bg-white/95 dark:bg-slate-900/95 backdrop-blur border border-slate-200/80 dark:border-slate-800 max-w-sm rounded-2xl text-center shadow-2xl">
-                <div className="bg-amber-100 text-amber-800 p-4 rounded-full mb-4 dark:bg-amber-950 dark:text-amber-400 shadow-md">
-                  <WifiOff className="w-8 h-8" />
+              savedSnapshot ? (
+                // ⭐ SHOW SNAPSHOT WHEN OFFLINE
+                <div className="w-full h-full max-w-2xl max-h-[500px] bg-white dark:bg-slate-900/80 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-2xl overflow-hidden relative flex flex-col z-0 p-4">
+                  <img
+                    src={savedSnapshot}
+                    alt="Offline Map Snapshot"
+                    className="rounded-xl w-full h-auto border border-slate-300 dark:border-slate-700 shadow-md"
+                  />
+
+                  <button
+                    onClick={() => setOfflineMode(false)}
+                    className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 px-4 rounded-lg transition self-center"
+                  >
+                    Reconnect Map
+                  </button>
                 </div>
-                <h3 className="text-sm font-bold text-slate-800 dark:text-white">
-                  Map View Unavailable Offline
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
-                  Active tile loading has been paused during simulated offline
-                  performance mode. Your itinerary updates will automatically
-                  sync when network access is restored.
-                </p>
-                <button
-                  onClick={() => setOfflineMode(false)}
-                  className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 px-4 rounded-lg transition"
-                >
-                  Reconnect Map
-                </button>
-              </div>
-            ) : !leafletLoaded ? (
+              ) : (
+                // ⭐ FALLBACK: NO SNAPSHOT SAVED YET
+                <div className="z-10 flex flex-col items-center justify-center p-8 bg-white/95 dark:bg-slate-900/95 backdrop-blur border border-slate-200/80 dark:border-slate-800 max-w-sm rounded-2xl text-center shadow-2xl">
+                  <div className="bg-amber-100 text-amber-800 p-4 rounded-full mb-4 dark:bg-amber-950 dark:text-amber-400 shadow-md">
+                    <WifiOff className="w-8 h-8" />
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-white">
+                    Map View Unavailable Offline
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
+                    Active tile loading has been paused during simulated offline
+                    performance mode. Your itinerary updates will automatically
+                    sync when network access is restored.
+                  </p>
+                  <button
+                    onClick={() => setOfflineMode(false)}
+                    className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 px-4 rounded-lg transition"
+                  >
+                    Reconnect Map
+                  </button>
+                </div>
+              )
+            ): !leafletLoaded ? (
               <div className="z-10 flex flex-col items-center justify-center p-8 bg-white/95 dark:bg-slate-900/95 backdrop-blur border border-slate-200/80 dark:border-slate-800 max-w-sm rounded-2xl text-center shadow-2xl">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-4" />
                 <h3 className="text-sm font-bold text-slate-800 dark:text-white">
@@ -643,10 +674,14 @@ export default function App() {
               <div className="w-full h-full max-w-2xl max-h-[500px] bg-white dark:bg-slate-900/80 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-2xl overflow-hidden relative flex flex-col z-0">
                 <div className="flex-1 w-full h-full min-h-[350px]">
                   <DirectLiveMap
-                    stops={activeDayStops}
+                    stops={stopsByDay[activeDay]}
                     activeDay={activeDay}
                     offlineMode={offlineMode}
+                    onSnapshot={(dataURL) => handleSnapshotFromHeader(dataURL)}
+                    snapshotRef={directSnapshotRef}
                   />
+
+
                 </div>
                 <div className="absolute bottom-4 left-4 right-4 bg-slate-900/90 text-white border border-slate-800 p-3 rounded-xl flex items-center justify-between text-[11px] backdrop-blur z-[1000] shadow-lg">
                   <span className="flex items-center gap-1">
