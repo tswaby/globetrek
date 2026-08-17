@@ -6,9 +6,8 @@ import TripsDashboard from "./TripsDashboard";
 import TripEditor from "./TripEditor";
 import './index.css';
 
-
 ReactDOM.createRoot(document.getElementById("root")).render(
-  <BrowserRouter>
+  <BrowserRouter basename="/globetrek">
     <Routes>
       <Route path="/" element={<TripsDashboard />} />
       <Route path="/trip/:tripId" element={<TripEditor />} />
